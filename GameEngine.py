@@ -60,6 +60,7 @@ class GameEngine:
         self.occupied = self.white_pieces | self.black_pieces
 
     def square_to_bit(self, square):
+        """Convert a (row, col) square to a bitboard bit."""
         row, col = square
         if not (0 <= row < 8 and 0 <= col < 8):
             raise ValueError("Square must be a (row, col) tuple with values from 0 to 7.")
@@ -152,16 +153,104 @@ class GameEngine:
 
     def is_valid_wpawn_move(self, from_square, to_square):
         # Implement white pawn move validation logic
-        if starting_square := self.square_to_bit(from_square) & self.white_pawns:
-            pass   
-        return True
+        from_row, from_col = from_square
+        _, to_col = to_square
+
+        # Vertical move
+        # Normal move: 1 square forward
+        one_ahead = self.square_to_bit((from_row + 1, from_col))
+        if not (self.occupied & one_ahead):
+            if to_square == (from_row + 1, from_col):
+                return True
+            # 2 squares forward from starting position
+            if from_row == 1:
+                two_ahead = self.square_to_bit((from_row + 2, from_col))
+                if not (self.occupied & two_ahead) and to_square == (from_row + 2, from_col):
+                    return True
+
+        # Capture move: 1 square diagonally forward
+        if from_col-to_col > 0:
+            capture_left = self.square_to_bit((from_row + 1, from_col - 1))
+            if (self.occupied & capture_left) and (self.black_pieces & capture_left):
+                if to_square == (from_row+1, from_col-1):
+                    return True
+        if from_col-to_col < 0:
+            capture_right = self.square_to_bit((from_row + 1, from_col + 1))
+            if (self.occupied & capture_right) and (self.black_pieces & capture_right):
+                if to_square == (from_row+1, from_col+1):
+                    return True
+            
+        return False
+            
+        
     
     def is_valid_bpawn_move(self, from_square, to_square):
         # Implement black pawn move validation logic
-        return True
+        from_row, from_col = from_square
+        _, to_col = to_square
+
+        # Vertical move
+        # Normal move: 1 square forward
+        one_down = self.square_to_bit((from_row - 1, from_col))
+        if not (self.occupied & one_down):
+            if to_square == (from_row - 1, from_col):
+                return True
+            # 2 squares forward from starting position
+            if from_row == 6:
+                two_down = self.square_to_bit((from_row - 2, from_col))
+                if not (self.occupied & two_down) and to_square == (from_row - 2, from_col):
+                    return True
+
+        # Capture move: 1 square diagonally forward
+        if from_col-to_col > 0:
+            capture_left = self.square_to_bit((from_row - 1, from_col - 1))
+            if (self.occupied & capture_left) and (self.white_pieces & capture_left):
+                if to_square == (from_row-1, from_col-1):
+                    return True
+        if from_col-to_col < 0:
+            capture_right = self.square_to_bit((from_row - 1, from_col + 1))
+            if (self.occupied & capture_right) and (self.white_pieces & capture_right):
+                if to_square == (from_row-1, from_col+1):
+                    return True
+            
+        return False
     
     def is_valid_rook_move(self, from_square, to_square):
         # Implement rook move validation logic
+        from_row, from_col = from_square
+        to_row, to_col = to_square
+        
+        row_diff = from_row-to_row
+        row_diff_abs = abs(row_diff)
+        col_diff = from_col-to_col
+        col_diff_abs = abs(col_diff)
+
+        # On same position or digonal moves are not allowed
+        if (row_diff_abs==0 and col_diff_abs==0) or (row_diff_abs != 0 and col_diff_abs != 0):
+            return False
+        
+        for i in range(1, row_diff_abs):
+            if row_diff < 0:
+                one_row_move = self.square_to_bit((from_row+i, from_col))
+            else:
+                one_row_move = self.square_to_bit((from_row-i, from_col))
+            if self.occupied & one_row_move:
+                return False
+
+        for i in range(1, col_diff_abs):
+            if col_diff < 0:
+                one_col_move = self.square_to_bit((from_row, from_col+i))
+            else:
+                one_col_move = self.square_to_bit((from_row, from_col-i))
+            if self.occupied & one_col_move:
+                return False
+
+        # Target square must not be occupied by own piece
+        target_bit = self.square_to_bit(to_square)
+        own_pieces = self.white_pieces if self.current_player == 'white' else self.black_pieces
+        if own_pieces & target_bit:
+            return False
+                
         return True
     
     def is_valid_knight_move(self, from_square, to_square):

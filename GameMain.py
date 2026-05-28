@@ -43,7 +43,7 @@ def main():
                 board_row = 7 - screen_row
                 board_col = screen_col
                 clicked = (board_row, board_col)
-
+                print(f"Clicked on board square: {clicked}")
                 if event.button == 1:  # Left click: select
                     piece = game_engine.get_piece(clicked)
                     if piece != '.' and game_engine.is_own_piece(piece):
@@ -77,6 +77,8 @@ def draw_board(win):
 
 def draw_pieces(win, game_engine, images):
     # Draw pieces on the board based on the bitboards in the game engine.
+    # Pygame coordinates are (x, y) with (0, 0) at the top-left corner, while our board coordinates are (row, col) with (0, 0) at the bottom-left corner.
+    # We need to convert between these coordinate systems when drawing the pieces.
     for piece, bitboard_name in game_engine.bitboards.items():
         bitboard = getattr(game_engine, bitboard_name)
         for i in range(64):
