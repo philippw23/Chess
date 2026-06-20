@@ -18,6 +18,8 @@ class GameEngine:
         self.initialize_board()
         self.current_player = 'white'
         self.game_over = False
+        self.game_result = None
+        self.winner = None
         self.in_check = False
 
     def initialize_board(self):
@@ -154,9 +156,13 @@ class GameEngine:
         if self.is_checkmate(self.current_player):
             print(f"Checkmate! {moving_player} wins!")
             self.game_over = True
+            self.game_result = 'checkmate'
+            self.winner = moving_player
         elif self.is_stalemate(self.current_player):
             print("Stalemate!")
             self.game_over = True
+            self.game_result = 'stalemate'
+            self.winner = None
         
         return True
 
@@ -356,7 +362,7 @@ class GameEngine:
 
         return is_safe
 
-    def get_best_move(self, player='black', depth=2):
+    def get_best_move(self, player='black', depth=4):
         previous_player = self.current_player
         self.current_player = player
         legal_moves = self.order_moves(self.get_all_legal_moves(player))
@@ -390,7 +396,9 @@ class GameEngine:
         return best_move
 
     def alpha_beta(self, depth, alpha, beta):
-        if depth == 0 or self.game_over:
+        if self.game_over:
+            return self.evaluate_terminal_position(depth)
+        if depth == 0:
             return self.evaluate_board('black')
 
         player = self.current_player
@@ -420,6 +428,14 @@ class GameEngine:
             if alpha >= beta:
                 break
         return value
+
+    def evaluate_terminal_position(self, depth):
+        if self.game_result == 'checkmate':
+            if self.winner == 'black':
+                return 100000 + depth
+            if self.winner == 'white':
+                return -100000 - depth
+        return 0
 
     def order_moves(self, moves):
         return sorted(moves, key=self.score_move_for_ordering, reverse=True)

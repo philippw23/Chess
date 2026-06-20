@@ -17,6 +17,8 @@ pygame.display.set_caption('Chess Game') # Set the title of the game window to "
 PROMOTION_ORDER = ['q', 'r', 'b', 'n']
 CPU_COLOR = 'black'
 CPU_SEARCH_DEPTH = 2
+HUMAN_COLOR = 'white'
+RESET_BUTTON_RECT = pygame.Rect(WIDTH // 2 - 80, HEIGHT // 2 + 54, 160, 44)
 
 def load_images():
     # Load images for the chess pieces. This function will be called once at the beginning of the game.
@@ -42,6 +44,13 @@ def main():
                 running = False
             elif event.type == pygame.MOUSEBUTTONDOWN:
                 mouse_pos = pygame.mouse.get_pos()
+                if game_engine.game_over:
+                    if RESET_BUTTON_RECT.collidepoint(mouse_pos):
+                        game_engine = GameEngine()
+                        selected_square = None
+                        pending_promotion = None
+                    continue
+
                 if pending_promotion is not None:
                     promotion_piece = get_promotion_choice(mouse_pos, pending_promotion)
                     if promotion_piece is not None:
@@ -128,6 +137,8 @@ def draw_game_state(win, game_engine, images, check, selected_square, pending_pr
     draw_pieces(win, game_engine, images)
     if pending_promotion is not None:
         draw_promotion_overlay(win, images, pending_promotion)
+    if game_engine.game_over:
+        draw_game_over_overlay(win, game_engine)
 
 def draw_board(win):
     # Draw the chess board squares. Light and dark squares will alternate
@@ -184,6 +195,44 @@ def draw_promotion_overlay(win, images, pending_promotion):
         pygame.draw.rect(win, pygame.Color(245, 245, 235), draw_rect, border_radius=6)
         pygame.draw.rect(win, pygame.Color(30, 30, 30), draw_rect, width=2, border_radius=6)
         win.blit(image, image_rect)
+
+def draw_game_over_overlay(win, game_engine):
+    overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+    overlay.fill((0, 0, 0, 170))
+    win.blit(overlay, (0, 0))
+
+    title_font = pygame.font.SysFont(None, 56)
+    body_font = pygame.font.SysFont(None, 28)
+    button_font = pygame.font.SysFont(None, 30)
+
+    title, subtitle = get_game_over_text(game_engine)
+    title_surface = title_font.render(title, True, pygame.Color(255, 255, 255))
+    subtitle_surface = body_font.render(subtitle, True, pygame.Color(230, 230, 230))
+    title_rect = title_surface.get_rect(center=(WIDTH // 2, HEIGHT // 2 - 56))
+    subtitle_rect = subtitle_surface.get_rect(center=(WIDTH // 2, HEIGHT // 2 - 10))
+
+    mouse_pos = pygame.mouse.get_pos()
+    button_color = pygame.Color(250, 250, 240) if RESET_BUTTON_RECT.collidepoint(mouse_pos) else pygame.Color(225, 225, 210)
+    pygame.draw.rect(win, button_color, RESET_BUTTON_RECT, border_radius=6)
+    pygame.draw.rect(win, pygame.Color(35, 35, 35), RESET_BUTTON_RECT, width=2, border_radius=6)
+
+    button_surface = button_font.render("New Game", True, pygame.Color(20, 20, 20))
+    button_text_rect = button_surface.get_rect(center=RESET_BUTTON_RECT.center)
+
+    win.blit(title_surface, title_rect)
+    win.blit(subtitle_surface, subtitle_rect)
+    win.blit(button_surface, button_text_rect)
+
+def get_game_over_text(game_engine):
+    if game_engine.game_result == 'stalemate':
+        return "Stalemate", "No legal moves remain."
+
+    if game_engine.game_result == 'checkmate':
+        if game_engine.winner == HUMAN_COLOR:
+            return "You Win", "Checkmate."
+        return "You Lose", "Checkmate."
+
+    return "Game Over", "The game has ended."
 
 if __name__ == "__main__":
     main()
