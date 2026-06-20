@@ -14,6 +14,7 @@ SQ_SIZE = HEIGHT // DIMENSION
 FPS = 15 # Frames per second for the game loop
 WIN = pygame.display.set_mode((WIDTH, HEIGHT)) # Set up the game window with the specified width and height
 pygame.display.set_caption('Chess Game') # Set the title of the game window to "Chess Game"
+PROMOTION_ORDER = ['q', 'r', 'b', 'n']
 
 def load_images():
     # Load images for the chess pieces. This function will be called once at the beginning of the game.
@@ -30,6 +31,7 @@ def main():
 
     running = True
     selected_square = None  # Board coordinates (board_row, board_col) of selected piece
+    pending_promotion = None
 
     while running:
         clock.tick(FPS)
@@ -38,6 +40,18 @@ def main():
                 running = False
             elif event.type == pygame.MOUSEBUTTONDOWN:
                 mouse_pos = pygame.mouse.get_pos()
+                if pending_promotion is not None:
+                    promotion_piece = get_promotion_choice(mouse_pos, pending_promotion)
+                    if promotion_piece is not None:
+                        game_engine.move_piece(
+                            pending_promotion['from_square'],
+                            pending_promotion['to_square'],
+                            promotion_piece
+                        )
+                        pending_promotion = None
+                        selected_square = None
+                    continue
+
                 screen_col = mouse_pos[0] // SQ_SIZE
                 screen_row = mouse_pos[1] // SQ_SIZE
                 board_row = 7 - screen_row
@@ -53,19 +67,53 @@ def main():
 
                 elif event.button == 3:  # Right click: execute move
                     if selected_square is not None:
-                        game_engine.move_piece(selected_square, clicked)
-                        selected_square = None
+                        piece = game_engine.get_piece(selected_square)
+                        if is_promotion_attempt(piece, clicked) and game_engine.is_valid_move(piece, selected_square, clicked):
+                            pending_promotion = {
+                                'from_square': selected_square,
+                                'to_square': clicked,
+                                'color_prefix': piece[0],
+                            }
+                        else:
+                            game_engine.move_piece(selected_square, clicked)
+                            selected_square = None
 
         # Draw the game state
-        draw_game_state(WIN, game_engine, images, game_engine.in_check, selected_square)
+        draw_game_state(WIN, game_engine, images, game_engine.in_check, selected_square, pending_promotion)
         pygame.display.flip()
 
     pygame.quit()
 
-def draw_game_state(win, game_engine, images, check, selected_square):
+def is_promotion_attempt(piece, to_square):
+    return (piece == 'wp' and to_square[0] == 7) or (piece == 'bp' and to_square[0] == 0)
+
+def get_promotion_choice(mouse_pos, pending_promotion):
+    for rect, piece in get_promotion_options(pending_promotion):
+        if rect.collidepoint(mouse_pos):
+            return piece
+    return None
+
+def get_promotion_options(pending_promotion):
+    box_size = SQ_SIZE
+    gap = 10
+    total_width = len(PROMOTION_ORDER) * box_size + (len(PROMOTION_ORDER) - 1) * gap
+    start_x = (WIDTH - total_width) // 2
+    y = (HEIGHT - box_size) // 2
+    color_prefix = pending_promotion['color_prefix']
+
+    options = []
+    for index, piece_type in enumerate(PROMOTION_ORDER):
+        x = start_x + index * (box_size + gap)
+        rect = pygame.Rect(x, y, box_size, box_size)
+        options.append((rect, f'{color_prefix}{piece_type}'))
+    return options
+
+def draw_game_state(win, game_engine, images, check, selected_square, pending_promotion):
     draw_board(win)
     draw_highlight(win, game_engine, check, selected_square)
     draw_pieces(win, game_engine, images)
+    if pending_promotion is not None:
+        draw_promotion_overlay(win, images, pending_promotion)
 
 def draw_board(win):
     # Draw the chess board squares. Light and dark squares will alternate
@@ -101,6 +149,27 @@ def draw_highlight(win, game_engine, check, selected_square):
                 screen_row = 7 - (i // 8)
                 col = i % 8
                 pygame.draw.rect(win, (255, 0, 0), pygame.Rect(col * SQ_SIZE, screen_row * SQ_SIZE, SQ_SIZE, SQ_SIZE), 3)
+
+def draw_promotion_overlay(win, images, pending_promotion):
+    overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+    overlay.fill((0, 0, 0, 150))
+    win.blit(overlay, (0, 0))
+
+    mouse_pos = pygame.mouse.get_pos()
+    for rect, piece in get_promotion_options(pending_promotion):
+        is_hovered = rect.collidepoint(mouse_pos)
+        draw_rect = rect.inflate(10, 10) if is_hovered else rect
+        image_rect = images[piece].get_rect(center=draw_rect.center)
+        if is_hovered:
+            hovered_image = pygame.transform.smoothscale(images[piece], (draw_rect.width, draw_rect.height))
+            image_rect = hovered_image.get_rect(center=draw_rect.center)
+            image = hovered_image
+        else:
+            image = images[piece]
+
+        pygame.draw.rect(win, pygame.Color(245, 245, 235), draw_rect, border_radius=6)
+        pygame.draw.rect(win, pygame.Color(30, 30, 30), draw_rect, width=2, border_radius=6)
+        win.blit(image, image_rect)
 
 if __name__ == "__main__":
     main()

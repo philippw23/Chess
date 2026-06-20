@@ -39,6 +39,14 @@ class GameEngine:
             'bk': 'black_king',
         }
         self.update_occupancy()
+        self.en_passant_target = None
+        self.en_passant_capture_square = None
+        self.castling_rights = {
+            'white_kingside': True,
+            'white_queenside': True,
+            'black_kingside': True,
+            'black_queenside': True,
+        }
 
     def update_occupancy(self):
         self.white_pieces = (
@@ -66,7 +74,7 @@ class GameEngine:
             raise ValueError("Square must be a (row, col) tuple with values from 0 to 7.")
         return 1 << (row * 8 + col)
 
-    def move_piece(self, from_square, to_square):
+    def move_piece(self, from_square, to_square, promotion_piece=None):
         # Validate and move a piece from one square to another
         if self.game_over:
             print("Game over. No more moves allowed.")
@@ -82,15 +90,58 @@ class GameEngine:
         if not self.is_valid_move(piece, from_square, to_square):
             print("Invalid move.")
             return False
-        
-        self.set_piece(to_square, piece)
+
+        previous_en_passant_target = self.en_passant_target
+        previous_en_passant_capture_square = self.en_passant_capture_square
+        previous_castling_rights = self.castling_rights.copy()
+        moving_player = self.current_player
+        from_row, from_col = from_square
+        to_row, to_col = to_square
+        is_castling = piece[1] == 'k' and abs(to_col - from_col) == 2
+        is_en_passant = self.is_en_passant_move(piece, from_square, to_square)
+        captured_square = self.en_passant_capture_square if is_en_passant else to_square
+        captured_piece = self.get_piece(captured_square)
+        placed_piece = self.get_promotion_piece(piece, to_square, promotion_piece)
+
         self.set_piece(from_square, '.')
+        if is_en_passant:
+            self.set_piece(captured_square, '.')
+        self.set_piece(to_square, placed_piece)
+
+        if is_castling:
+            rook_from, rook_to = self.get_castling_rook_squares(from_square, to_square)
+            rook_piece = self.get_piece(rook_from)
+            self.set_piece(rook_from, '.')
+            self.set_piece(rook_to, rook_piece)
+
+        if self.is_check(moving_player):
+            if is_castling:
+                rook_from, rook_to = self.get_castling_rook_squares(from_square, to_square)
+                rook_piece = self.get_piece(rook_to)
+                self.set_piece(rook_to, '.')
+                self.set_piece(rook_from, rook_piece)
+            self.set_piece(to_square, '.')
+            self.set_piece(captured_square, captured_piece)
+            self.set_piece(from_square, piece)
+            self.en_passant_target = previous_en_passant_target
+            self.en_passant_capture_square = previous_en_passant_capture_square
+            self.castling_rights = previous_castling_rights
+            print("Invalid move. King would be in check.")
+            return False
+
+        self.update_castling_rights(piece, from_square, captured_piece, captured_square)
+        self.en_passant_target = None
+        self.en_passant_capture_square = None
+        if piece[1] == 'p' and abs(to_row - from_row) == 2:
+            self.en_passant_target = ((from_row + to_row) // 2, from_col)
+            self.en_passant_capture_square = to_square
         
         if self.is_checkmate():
             print(f"Checkmate! {self.current_player} wins!")
             self.game_over = True
         else:
             self.toggle_player()
+            self.in_check = self.is_check(self.current_player)
         
         return True
 
@@ -143,6 +194,165 @@ class GameEngine:
             raise ValueError(f"Unknown piece type: {piece}")
         return valid_moves_func_dict[piece](from_square, to_square)
 
+    def bit_to_square(self, bit):
+        """Convert a single bitboard bit to a (row, col) square."""
+        index = bit.bit_length() - 1
+        return (index // 8, index % 8)
+
+    def get_promotion_piece(self, piece, to_square, promotion_piece):
+        if piece == 'wp' and to_square[0] == 7:
+            return promotion_piece if promotion_piece in ('wq', 'wr', 'wb', 'wn') else 'wq'
+        if piece == 'bp' and to_square[0] == 0:
+            return promotion_piece if promotion_piece in ('bq', 'br', 'bb', 'bn') else 'bq'
+        return piece
+
+    def get_castling_rook_squares(self, from_square, to_square):
+        row = from_square[0]
+        if to_square[1] > from_square[1]:
+            return (row, 7), (row, 5)
+        return (row, 0), (row, 3)
+
+    def is_en_passant_move(self, piece, from_square, to_square):
+        if piece[1] != 'p' or to_square != self.en_passant_target:
+            return False
+        if self.en_passant_capture_square is None or self.get_piece(to_square) != '.':
+            return False
+
+        from_row, from_col = from_square
+        to_row, to_col = to_square
+        captured_piece = self.get_piece(self.en_passant_capture_square)
+
+        if piece == 'wp':
+            return (
+                to_row == from_row + 1
+                and abs(to_col - from_col) == 1
+                and self.en_passant_capture_square == (from_row, to_col)
+                and captured_piece == 'bp'
+            )
+
+        if piece == 'bp':
+            return (
+                to_row == from_row - 1
+                and abs(to_col - from_col) == 1
+                and self.en_passant_capture_square == (from_row, to_col)
+                and captured_piece == 'wp'
+            )
+
+        return False
+
+    def update_castling_rights(self, piece, from_square, captured_piece='.', captured_square=None):
+        if piece == 'wk':
+            self.castling_rights['white_kingside'] = False
+            self.castling_rights['white_queenside'] = False
+        elif piece == 'bk':
+            self.castling_rights['black_kingside'] = False
+            self.castling_rights['black_queenside'] = False
+        elif piece == 'wr':
+            if from_square == (0, 0):
+                self.castling_rights['white_queenside'] = False
+            elif from_square == (0, 7):
+                self.castling_rights['white_kingside'] = False
+        elif piece == 'br':
+            if from_square == (7, 0):
+                self.castling_rights['black_queenside'] = False
+            elif from_square == (7, 7):
+                self.castling_rights['black_kingside'] = False
+
+        if captured_piece == 'wr':
+            if captured_square == (0, 0):
+                self.castling_rights['white_queenside'] = False
+            elif captured_square == (0, 7):
+                self.castling_rights['white_kingside'] = False
+        elif captured_piece == 'br':
+            if captured_square == (7, 0):
+                self.castling_rights['black_queenside'] = False
+            elif captured_square == (7, 7):
+                self.castling_rights['black_kingside'] = False
+
+    def is_check(self, player=None):
+        player = player or self.current_player
+        king_bit = self.white_king if player == 'white' else self.black_king
+        if not king_bit:
+            return False
+
+        king_square = self.bit_to_square(king_bit)
+        opponent = 'black' if player == 'white' else 'white'
+        return self.is_square_attacked(king_square, opponent)
+
+    def is_square_attacked(self, square, attacker):
+        attacker_prefix = attacker[0]
+        for piece, bitboard_name in self.bitboards.items():
+            if not piece.startswith(attacker_prefix):
+                continue
+
+            pieces = getattr(self, bitboard_name)
+            while pieces:
+                piece_bit = pieces & -pieces
+                from_square = self.bit_to_square(piece_bit)
+                if self.piece_attacks_square(piece, from_square, square):
+                    return True
+                pieces &= pieces - 1
+
+        return False
+
+    def piece_attacks_square(self, piece, from_square, target_square):
+        from_row, from_col = from_square
+        target_row, target_col = target_square
+        row_diff = target_row - from_row
+        col_diff = target_col - from_col
+        row_diff_abs = abs(row_diff)
+        col_diff_abs = abs(col_diff)
+
+        if piece == 'wp':
+            return row_diff == 1 and col_diff_abs == 1
+        if piece == 'bp':
+            return row_diff == -1 and col_diff_abs == 1
+        if piece[1] == 'n':
+            return (row_diff_abs, col_diff_abs) in ((2, 1), (1, 2))
+        if piece[1] == 'k':
+            return max(row_diff_abs, col_diff_abs) == 1
+        if piece[1] == 'b':
+            return self.is_clear_diagonal(from_square, target_square)
+        if piece[1] == 'r':
+            return self.is_clear_straight(from_square, target_square)
+        if piece[1] == 'q':
+            return self.is_clear_diagonal(from_square, target_square) or self.is_clear_straight(from_square, target_square)
+        return False
+
+    def is_clear_diagonal(self, from_square, to_square):
+        from_row, from_col = from_square
+        to_row, to_col = to_square
+        row_diff = to_row - from_row
+        col_diff = to_col - from_col
+        row_diff_abs = abs(row_diff)
+
+        if row_diff_abs == 0 or row_diff_abs != abs(col_diff):
+            return False
+
+        row_step = 1 if row_diff > 0 else -1
+        col_step = 1 if col_diff > 0 else -1
+        for i in range(1, row_diff_abs):
+            if self.occupied & self.square_to_bit((from_row + row_step * i, from_col + col_step * i)):
+                return False
+        return True
+
+    def is_clear_straight(self, from_square, to_square):
+        from_row, from_col = from_square
+        to_row, to_col = to_square
+        row_diff = to_row - from_row
+        col_diff = to_col - from_col
+
+        if (row_diff == 0 and col_diff == 0) or (row_diff != 0 and col_diff != 0):
+            return False
+
+        row_step = 0 if row_diff == 0 else (1 if row_diff > 0 else -1)
+        col_step = 0 if col_diff == 0 else (1 if col_diff > 0 else -1)
+        distance = max(abs(row_diff), abs(col_diff))
+        for i in range(1, distance):
+            if self.occupied & self.square_to_bit((from_row + row_step * i, from_col + col_step * i)):
+                return False
+        return True
+
     def is_checkmate(self):
         # Implement checkmate detection logic
         # This is a placeholder for actual checkmate detection
@@ -154,64 +364,54 @@ class GameEngine:
     def is_valid_wpawn_move(self, from_square, to_square):
         # Implement white pawn move validation logic
         from_row, from_col = from_square
-        _, to_col = to_square
+        to_row, to_col = to_square
 
         # Vertical move
         # Normal move: 1 square forward
-        one_ahead = self.square_to_bit((from_row + 1, from_col))
-        if not (self.occupied & one_ahead):
-            if to_square == (from_row + 1, from_col):
-                return True
-            # 2 squares forward from starting position
-            if from_row == 1:
-                two_ahead = self.square_to_bit((from_row + 2, from_col))
-                if not (self.occupied & two_ahead) and to_square == (from_row + 2, from_col):
-                    return True
+        if to_col == from_col and to_row == from_row + 1:
+            one_ahead = self.square_to_bit(to_square)
+            return not (self.occupied & one_ahead)
+
+        # 2 squares forward from starting position
+        if from_row == 1 and to_col == from_col and to_row == from_row + 2:
+            one_ahead = self.square_to_bit((from_row + 1, from_col))
+            two_ahead = self.square_to_bit(to_square)
+            return not (self.occupied & one_ahead) and not (self.occupied & two_ahead)
 
         # Capture move: 1 square diagonally forward
-        if from_col-to_col > 0:
-            capture_left = self.square_to_bit((from_row + 1, from_col - 1))
-            if (self.occupied & capture_left) and (self.black_pieces & capture_left):
-                if to_square == (from_row+1, from_col-1):
-                    return True
-        if from_col-to_col < 0:
-            capture_right = self.square_to_bit((from_row + 1, from_col + 1))
-            if (self.occupied & capture_right) and (self.black_pieces & capture_right):
-                if to_square == (from_row+1, from_col+1):
-                    return True
+        if to_row == from_row + 1 and abs(to_col - from_col) == 1:
+            target_bit = self.square_to_bit(to_square)
+            if self.black_pieces & target_bit:
+                return True
+            if self.is_en_passant_move('wp', from_square, to_square):
+                return True
             
         return False
-            
-        
     
     def is_valid_bpawn_move(self, from_square, to_square):
         # Implement black pawn move validation logic
         from_row, from_col = from_square
-        _, to_col = to_square
+        to_row, to_col = to_square
 
         # Vertical move
         # Normal move: 1 square forward
-        one_down = self.square_to_bit((from_row - 1, from_col))
-        if not (self.occupied & one_down):
-            if to_square == (from_row - 1, from_col):
-                return True
-            # 2 squares forward from starting position
-            if from_row == 6:
-                two_down = self.square_to_bit((from_row - 2, from_col))
-                if not (self.occupied & two_down) and to_square == (from_row - 2, from_col):
-                    return True
+        if to_col == from_col and to_row == from_row - 1:
+            one_down = self.square_to_bit(to_square)
+            return not (self.occupied & one_down)
+
+        # 2 squares forward from starting position
+        if from_row == 6 and to_col == from_col and to_row == from_row - 2:
+            one_down = self.square_to_bit((from_row - 1, from_col))
+            two_down = self.square_to_bit(to_square)
+            return not (self.occupied & one_down) and not (self.occupied & two_down)
 
         # Capture move: 1 square diagonally forward
-        if from_col-to_col > 0:
-            capture_left = self.square_to_bit((from_row - 1, from_col - 1))
-            if (self.occupied & capture_left) and (self.white_pieces & capture_left):
-                if to_square == (from_row-1, from_col-1):
-                    return True
-        if from_col-to_col < 0:
-            capture_right = self.square_to_bit((from_row - 1, from_col + 1))
-            if (self.occupied & capture_right) and (self.white_pieces & capture_right):
-                if to_square == (from_row-1, from_col+1):
-                    return True
+        if to_row == from_row - 1 and abs(to_col - from_col) == 1:
+            target_bit = self.square_to_bit(to_square)
+            if self.white_pieces & target_bit:
+                return True
+            if self.is_en_passant_move('bp', from_square, to_square):
+                return True
             
         return False
     
@@ -255,17 +455,118 @@ class GameEngine:
     
     def is_valid_knight_move(self, from_square, to_square):
         # Implement knight move validation logic
+        from_row, from_col = from_square
+        to_row, to_col = to_square
+
+        row_diff_abs = abs(from_row - to_row)
+        col_diff_abs = abs(from_col - to_col)
+        if (row_diff_abs, col_diff_abs) not in ((2, 1), (1, 2)):
+            return False
+
+        target_bit = self.square_to_bit(to_square)
+        own_pieces = self.white_pieces if self.current_player == 'white' else self.black_pieces
+        if own_pieces & target_bit:
+            return False
+        
         return True
     
     def is_valid_bishop_move(self, from_square, to_square):
         # Implement bishop move validation logic
+        from_row, from_col = from_square
+        to_row, to_col = to_square
+
+        row_diff = to_row - from_row
+        col_diff = to_col - from_col
+        row_diff_abs = abs(row_diff)
+        col_diff_abs = abs(col_diff)
+
+        if row_diff_abs == 0 or row_diff_abs != col_diff_abs:
+            return False
+
+        row_step = 1 if row_diff > 0 else -1
+        col_step = 1 if col_diff > 0 else -1
+        for i in range(1, row_diff_abs):
+            square_bit = self.square_to_bit((from_row + row_step * i, from_col + col_step * i))
+            if self.occupied & square_bit:
+                return False
+
+        target_bit = self.square_to_bit(to_square)
+        own_pieces = self.white_pieces if self.current_player == 'white' else self.black_pieces
+        if own_pieces & target_bit:
+            return False
+
         return True
     
     def is_valid_queen_move(self, from_square, to_square):
         # Implement queen move validation logic
-        return True
+        from_row, from_col = from_square
+        to_row, to_col = to_square
+
+        row_diff_abs = abs(from_row - to_row)
+        col_diff_abs = abs(from_col - to_col)
+
+        if row_diff_abs == col_diff_abs:
+            return self.is_valid_bishop_move(from_square, to_square)
+        if row_diff_abs == 0 or col_diff_abs == 0:
+            return self.is_valid_rook_move(from_square, to_square)
+
+        return False
     
     def is_valid_king_move(self, from_square, to_square):
         # Implement king move validation logic
+        from_row, from_col = from_square
+        to_row, to_col = to_square
+
+        row_diff_abs = abs(from_row - to_row)
+        col_diff_abs = abs(from_col - to_col)
+        if row_diff_abs == 0 and col_diff_abs == 2:
+            return self.is_valid_castling_move(from_square, to_square)
+
+        if row_diff_abs > 1 or col_diff_abs > 1 or (row_diff_abs == 0 and col_diff_abs == 0):
+            return False
+
+        target_bit = self.square_to_bit(to_square)
+        own_pieces = self.white_pieces if self.current_player == 'white' else self.black_pieces
+        if own_pieces & target_bit:
+            return False
+
+        return True
+
+    def is_valid_castling_move(self, from_square, to_square):
+        player = self.current_player
+        row = 0 if player == 'white' else 7
+        king_piece = 'wk' if player == 'white' else 'bk'
+        rook_piece = 'wr' if player == 'white' else 'br'
+        opponent = 'black' if player == 'white' else 'white'
+
+        if from_square != (row, 4) or self.get_piece(from_square) != king_piece:
+            return False
+        if to_square not in ((row, 6), (row, 2)):
+            return False
+        if self.is_check(player):
+            return False
+
+        if to_square[1] == 6:
+            right_key = f'{player}_kingside'
+            rook_square = (row, 7)
+            empty_squares = [(row, 5), (row, 6)]
+            checked_squares = [(row, 5), (row, 6)]
+        else:
+            right_key = f'{player}_queenside'
+            rook_square = (row, 0)
+            empty_squares = [(row, 1), (row, 2), (row, 3)]
+            checked_squares = [(row, 3), (row, 2)]
+
+        if not self.castling_rights[right_key]:
+            return False
+        if self.get_piece(rook_square) != rook_piece:
+            return False
+        for square in empty_squares:
+            if self.occupied & self.square_to_bit(square):
+                return False
+        for square in checked_squares:
+            if self.is_square_attacked(square, opponent):
+                return False
+
         return True
     
