@@ -15,6 +15,8 @@ FPS = 15 # Frames per second for the game loop
 WIN = pygame.display.set_mode((WIDTH, HEIGHT)) # Set up the game window with the specified width and height
 pygame.display.set_caption('Chess Game') # Set the title of the game window to "Chess Game"
 PROMOTION_ORDER = ['q', 'r', 'b', 'n']
+CPU_COLOR = 'black'
+CPU_SEARCH_DEPTH = 2
 
 def load_images():
     # Load images for the chess pieces. This function will be called once at the beginning of the game.
@@ -43,13 +45,15 @@ def main():
                 if pending_promotion is not None:
                     promotion_piece = get_promotion_choice(mouse_pos, pending_promotion)
                     if promotion_piece is not None:
-                        game_engine.move_piece(
+                        move_successful = game_engine.move_piece(
                             pending_promotion['from_square'],
                             pending_promotion['to_square'],
                             promotion_piece
                         )
                         pending_promotion = None
                         selected_square = None
+                        if move_successful:
+                            make_cpu_move(game_engine)
                     continue
 
                 screen_col = mouse_pos[0] // SQ_SIZE
@@ -75,8 +79,10 @@ def main():
                                 'color_prefix': piece[0],
                             }
                         else:
-                            game_engine.move_piece(selected_square, clicked)
+                            move_successful = game_engine.move_piece(selected_square, clicked)
                             selected_square = None
+                            if move_successful:
+                                make_cpu_move(game_engine)
 
         # Draw the game state
         draw_game_state(WIN, game_engine, images, game_engine.in_check, selected_square, pending_promotion)
@@ -86,6 +92,14 @@ def main():
 
 def is_promotion_attempt(piece, to_square):
     return (piece == 'wp' and to_square[0] == 7) or (piece == 'bp' and to_square[0] == 0)
+
+def make_cpu_move(game_engine):
+    if game_engine.game_over or game_engine.current_player != CPU_COLOR:
+        return
+
+    best_move = game_engine.get_best_move(CPU_COLOR, CPU_SEARCH_DEPTH)
+    if best_move is not None:
+        game_engine.move_piece(*best_move)
 
 def get_promotion_choice(mouse_pos, pending_promotion):
     for rect, piece in get_promotion_options(pending_promotion):

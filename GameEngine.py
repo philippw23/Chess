@@ -1,7 +1,19 @@
 """
 Game Engine for Chess Game. Handles game logic, move validation, and game state management.
 """
+import copy
+
+
 class GameEngine:
+    PIECE_VALUES = {
+        'p': 100,
+        'n': 320,
+        'b': 330,
+        'r': 500,
+        'q': 900,
+        'k': 0,
+    }
+
     def __init__(self):
         self.initialize_board()
         self.current_player = 'white'
@@ -135,13 +147,16 @@ class GameEngine:
         if piece[1] == 'p' and abs(to_row - from_row) == 2:
             self.en_passant_target = ((from_row + to_row) // 2, from_col)
             self.en_passant_capture_square = to_square
-        
-        if self.is_checkmate():
-            print(f"Checkmate! {self.current_player} wins!")
+
+        self.toggle_player()
+        self.in_check = self.is_check(self.current_player)
+
+        if self.is_checkmate(self.current_player):
+            print(f"Checkmate! {moving_player} wins!")
             self.game_over = True
-        else:
-            self.toggle_player()
-            self.in_check = self.is_check(self.current_player)
+        elif self.is_stalemate(self.current_player):
+            print("Stalemate!")
+            self.game_over = True
         
         return True
 
@@ -198,6 +213,230 @@ class GameEngine:
         """Convert a single bitboard bit to a (row, col) square."""
         index = bit.bit_length() - 1
         return (index // 8, index % 8)
+
+    def iter_bitboard_squares(self, bitboard):
+        while bitboard:
+            piece_bit = bitboard & -bitboard
+            yield self.bit_to_square(piece_bit)
+            bitboard &= bitboard - 1
+
+    def evaluate_board(self, perspective='white'):
+        """Evaluate the position in centipawns. Positive is good for perspective."""
+        score = 0
+
+        for piece, bitboard_name in self.bitboards.items():
+            color = 'white' if piece[0] == 'w' else 'black'
+            piece_type = piece[1]
+            color_sign = 1 if color == 'white' else -1
+            bitboard = getattr(self, bitboard_name)
+
+            for square in self.iter_bitboard_squares(bitboard):
+                score += color_sign * self.evaluate_piece(piece_type, color, square)
+
+        score += self.evaluate_bishop_pair()
+        score += self.evaluate_castling_rights()
+
+        if self.is_check('white'):
+            score -= 50
+        if self.is_check('black'):
+            score += 50
+
+        if perspective == 'black':
+            return -score
+        return score
+
+    def evaluate_piece(self, piece_type, color, square):
+        row, col = square
+        value = self.PIECE_VALUES[piece_type]
+
+        if piece_type == 'p':
+            advancement = row if color == 'white' else 7 - row
+            file_center_bonus = 6 - abs(col * 2 - 7)
+            return value + advancement * 8 + file_center_bonus
+
+        center_bonus = 14 - (abs(row * 2 - 7) + abs(col * 2 - 7))
+        if piece_type in ('n', 'b'):
+            return value + center_bonus * 4
+        if piece_type == 'q':
+            return value + center_bonus
+        if piece_type == 'r':
+            advancement = row if color == 'white' else 7 - row
+            return value + advancement * 2
+        if piece_type == 'k':
+            back_rank = row == 0 if color == 'white' else row == 7
+            return 20 if back_rank and col in (1, 2, 6) else 0
+
+        return value
+
+    def evaluate_bishop_pair(self):
+        score = 0
+        if self.white_bishops.bit_count() >= 2:
+            score += 30
+        if self.black_bishops.bit_count() >= 2:
+            score -= 30
+        return score
+
+    def evaluate_castling_rights(self):
+        score = 0
+        if self.castling_rights['white_kingside']:
+            score += 10
+        if self.castling_rights['white_queenside']:
+            score += 10
+        if self.castling_rights['black_kingside']:
+            score -= 10
+        if self.castling_rights['black_queenside']:
+            score -= 10
+        return score
+
+    def get_all_legal_moves(self, player=None):
+        player = player or self.current_player
+        previous_player = self.current_player
+        self.current_player = player
+        legal_moves = []
+
+        try:
+            for piece, bitboard_name in self.bitboards.items():
+                if not piece.startswith(player[0]):
+                    continue
+
+                for from_square in self.iter_bitboard_squares(getattr(self, bitboard_name)):
+                    for row in range(8):
+                        for col in range(8):
+                            to_square = (row, col)
+                            if not self.is_valid_move(piece, from_square, to_square):
+                                continue
+
+                            promotion_pieces = self.get_promotion_options_for_move(piece, to_square)
+                            for promotion_piece in promotion_pieces:
+                                if self.move_keeps_king_safe(piece, from_square, to_square, promotion_piece):
+                                    legal_moves.append((from_square, to_square, promotion_piece))
+        finally:
+            self.current_player = previous_player
+
+        return legal_moves
+
+    def get_promotion_options_for_move(self, piece, to_square):
+        if piece == 'wp' and to_square[0] == 7:
+            return ['wq', 'wr', 'wb', 'wn']
+        if piece == 'bp' and to_square[0] == 0:
+            return ['bq', 'br', 'bb', 'bn']
+        return [None]
+
+    def move_keeps_king_safe(self, piece, from_square, to_square, promotion_piece=None):
+        moving_player = 'white' if piece[0] == 'w' else 'black'
+        from_row, from_col = from_square
+        _, to_col = to_square
+        is_castling = piece[1] == 'k' and abs(to_col - from_col) == 2
+        is_en_passant = self.is_en_passant_move(piece, from_square, to_square)
+        captured_square = self.en_passant_capture_square if is_en_passant else to_square
+        captured_piece = self.get_piece(captured_square)
+        placed_piece = self.get_promotion_piece(piece, to_square, promotion_piece)
+
+        self.set_piece(from_square, '.')
+        if is_en_passant:
+            self.set_piece(captured_square, '.')
+        self.set_piece(to_square, placed_piece)
+
+        if is_castling:
+            rook_from, rook_to = self.get_castling_rook_squares(from_square, to_square)
+            rook_piece = self.get_piece(rook_from)
+            self.set_piece(rook_from, '.')
+            self.set_piece(rook_to, rook_piece)
+
+        is_safe = not self.is_check(moving_player)
+
+        if is_castling:
+            rook_from, rook_to = self.get_castling_rook_squares(from_square, to_square)
+            rook_piece = self.get_piece(rook_to)
+            self.set_piece(rook_to, '.')
+            self.set_piece(rook_from, rook_piece)
+        self.set_piece(to_square, '.')
+        self.set_piece(captured_square, captured_piece)
+        self.set_piece(from_square, piece)
+
+        return is_safe
+
+    def get_best_move(self, player='black', depth=2):
+        previous_player = self.current_player
+        self.current_player = player
+        legal_moves = self.order_moves(self.get_all_legal_moves(player))
+        self.current_player = previous_player
+
+        if not legal_moves:
+            return None
+
+        best_move = None
+        best_score = -float('inf') if player == 'black' else float('inf')
+        alpha = -float('inf')
+        beta = float('inf')
+
+        for move in legal_moves:
+            next_position = copy.deepcopy(self)
+            next_position.current_player = player
+            next_position.move_piece(*move)
+            score = next_position.alpha_beta(depth - 1, alpha, beta)
+
+            if player == 'black':
+                if score > best_score:
+                    best_score = score
+                    best_move = move
+                alpha = max(alpha, best_score)
+            else:
+                if score < best_score:
+                    best_score = score
+                    best_move = move
+                beta = min(beta, best_score)
+
+        return best_move
+
+    def alpha_beta(self, depth, alpha, beta):
+        if depth == 0 or self.game_over:
+            return self.evaluate_board('black')
+
+        player = self.current_player
+        legal_moves = self.order_moves(self.get_all_legal_moves(player))
+        if not legal_moves:
+            if self.is_check(player):
+                return -100000 - depth if player == 'black' else 100000 + depth
+            return 0
+
+        if player == 'black':
+            value = -float('inf')
+            for move in legal_moves:
+                next_position = copy.deepcopy(self)
+                next_position.move_piece(*move)
+                value = max(value, next_position.alpha_beta(depth - 1, alpha, beta))
+                alpha = max(alpha, value)
+                if alpha >= beta:
+                    break
+            return value
+
+        value = float('inf')
+        for move in legal_moves:
+            next_position = copy.deepcopy(self)
+            next_position.move_piece(*move)
+            value = min(value, next_position.alpha_beta(depth - 1, alpha, beta))
+            beta = min(beta, value)
+            if alpha >= beta:
+                break
+        return value
+
+    def order_moves(self, moves):
+        return sorted(moves, key=self.score_move_for_ordering, reverse=True)
+
+    def score_move_for_ordering(self, move):
+        from_square, to_square, promotion_piece = move
+        moving_piece = self.get_piece(from_square)
+        captured_piece = self.get_piece(to_square)
+        if self.is_en_passant_move(moving_piece, from_square, to_square):
+            captured_piece = self.get_piece(self.en_passant_capture_square)
+
+        score = 0
+        if captured_piece != '.':
+            score += self.PIECE_VALUES[captured_piece[1]] - self.PIECE_VALUES[moving_piece[1]] // 10
+        if promotion_piece is not None:
+            score += self.PIECE_VALUES[promotion_piece[1]]
+        return score
 
     def get_promotion_piece(self, piece, to_square, promotion_piece):
         if piece == 'wp' and to_square[0] == 7:
@@ -353,10 +592,13 @@ class GameEngine:
                 return False
         return True
 
-    def is_checkmate(self):
-        # Implement checkmate detection logic
-        # This is a placeholder for actual checkmate detection
-        return False
+    def is_checkmate(self, player=None):
+        player = player or self.current_player
+        return self.is_check(player) and len(self.get_all_legal_moves(player)) == 0
+
+    def is_stalemate(self, player=None):
+        player = player or self.current_player
+        return not self.is_check(player) and len(self.get_all_legal_moves(player)) == 0
 
     def toggle_player(self):
         self.current_player = 'black' if self.current_player == 'white' else 'white'
