@@ -1,7 +1,7 @@
 """
 Game Engine for Chess Game. Handles game logic, move validation, and game state management.
 """
-import copy
+import ChessAI
 
 
 class GameEngine:
@@ -21,6 +21,11 @@ class GameEngine:
         self.game_result = None
         self.winner = None
         self.in_check = False
+        self.position_counts = {}
+        self.record_current_position()
+        self.start_board = self.get_board()
+        # One entry per played move: notation (e.g. 'Nf3', 'O-O', 'exd8=Q#'), squares and the board after the move.
+        self.move_log = []
 
     def initialize_board(self):
         # Initialize bitboards for the chess starting position.
@@ -105,6 +110,7 @@ class GameEngine:
             print("Invalid move.")
             return False
 
+        notation = self.get_move_notation(from_square, to_square, promotion_piece)
         previous_en_passant_target = self.en_passant_target
         previous_en_passant_capture_square = self.en_passant_capture_square
         previous_castling_rights = self.castling_rights.copy()
@@ -163,8 +169,71 @@ class GameEngine:
             self.game_over = True
             self.game_result = 'stalemate'
             self.winner = None
-        
+        else:
+            self.record_current_position()
+            if self.is_threefold_repetition():
+                print("Draw by threefold repetition!")
+                self.game_over = True
+                self.game_result = 'threefold_repetition'
+                self.winner = None
+
+        if self.game_result == 'checkmate':
+            notation += '#'
+        elif self.in_check:
+            notation += '+'
+        self.move_log.append({
+            'notation': notation,
+            'from_square': from_square,
+            'to_square': to_square,
+            'board': self.get_board(),
+            'in_check': self.in_check,
+        })
         return True
+
+    def get_board(self):
+        """Return the position as a dict of (row, col) -> piece for all occupied squares."""
+        board = {}
+        for piece, bitboard_name in self.bitboards.items():
+            for square in self.iter_bitboard_squares(getattr(self, bitboard_name)):
+                board[square] = piece
+        return board
+
+    def get_move_notation(self, from_square, to_square, promotion_piece=None):
+        """Standard algebraic notation of a move without check suffix. Call it before the move is made."""
+        piece = self.get_piece(from_square)
+        from_row, from_col = from_square
+        to_row, to_col = to_square
+        if piece[1] == 'k' and abs(to_col - from_col) == 2:
+            return 'O-O' if to_col > from_col else 'O-O-O'
+
+        files = 'abcdefgh'
+        target = f'{files[to_col]}{to_row + 1}'
+        is_capture = self.get_piece(to_square) != '.' or self.is_en_passant_move(piece, from_square, to_square)
+
+        if piece[1] == 'p':
+            notation = f'{files[from_col]}x{target}' if is_capture else target
+            placed_piece = self.get_promotion_piece(piece, to_square, promotion_piece)
+            if placed_piece != piece:
+                notation += '=' + placed_piece[1].upper()
+            return notation
+
+        # Name the file or rank if another piece of the same type could also reach the target.
+        player = 'white' if piece[0] == 'w' else 'black'
+        rivals = [
+            other_from
+            for other_from, other_to, _ in self.get_all_legal_moves(player)
+            if other_to == to_square and other_from != from_square and self.get_piece(other_from) == piece
+        ]
+        disambiguation = ''
+        if rivals:
+            if all(other_col != from_col for _, other_col in rivals):
+                disambiguation = files[from_col]
+            elif all(other_row != from_row for other_row, _ in rivals):
+                disambiguation = str(from_row + 1)
+            else:
+                disambiguation = f'{files[from_col]}{from_row + 1}'
+
+        return piece[1].upper() + disambiguation + ('x' if is_capture else '') + target
 
     def get_piece(self, square):
         # Get the piece at a given square directly from the bitboards.
@@ -225,6 +294,55 @@ class GameEngine:
             piece_bit = bitboard & -bitboard
             yield self.bit_to_square(piece_bit)
             bitboard &= bitboard - 1
+
+    def get_position_key(self):
+        castling_key = tuple(
+            self.castling_rights[key]
+            for key in (
+                'white_kingside',
+                'white_queenside',
+                'black_kingside',
+                'black_queenside',
+            )
+        )
+        pieces_key = tuple(
+            getattr(self, self.bitboards[piece])
+            for piece in (
+                'wp', 'wr', 'wn', 'wb', 'wq', 'wk',
+                'bp', 'br', 'bn', 'bb', 'bq', 'bk',
+            )
+        )
+        return (
+            pieces_key,
+            self.current_player,
+            castling_key,
+            self.get_repetition_en_passant_target(),
+        )
+
+    def get_repetition_en_passant_target(self):
+        if self.en_passant_target is None or self.en_passant_capture_square is None:
+            return None
+
+        _, target_col = self.en_passant_target
+        capture_row, _ = self.en_passant_capture_square
+        if self.current_player == 'white':
+            pawn_piece = 'wp'
+            pawn_row = capture_row
+        else:
+            pawn_piece = 'bp'
+            pawn_row = capture_row
+
+        for pawn_col in (target_col - 1, target_col + 1):
+            if 0 <= pawn_col < 8 and self.get_piece((pawn_row, pawn_col)) == pawn_piece:
+                return self.en_passant_target
+        return None
+
+    def record_current_position(self):
+        position_key = self.get_position_key()
+        self.position_counts[position_key] = self.position_counts.get(position_key, 0) + 1
+
+    def is_threefold_repetition(self):
+        return self.position_counts.get(self.get_position_key(), 0) >= 3
 
     def evaluate_board(self, perspective='white'):
         """Evaluate the position in centipawns. Positive is good for perspective."""
@@ -363,96 +481,7 @@ class GameEngine:
         return is_safe
 
     def get_best_move(self, player='black', depth=4):
-        previous_player = self.current_player
-        self.current_player = player
-        legal_moves = self.order_moves(self.get_all_legal_moves(player))
-        self.current_player = previous_player
-
-        if not legal_moves:
-            return None
-
-        best_move = None
-        best_score = -float('inf') if player == 'black' else float('inf')
-        alpha = -float('inf')
-        beta = float('inf')
-
-        for move in legal_moves:
-            next_position = copy.deepcopy(self)
-            next_position.current_player = player
-            next_position.move_piece(*move)
-            score = next_position.alpha_beta(depth - 1, alpha, beta)
-
-            if player == 'black':
-                if score > best_score:
-                    best_score = score
-                    best_move = move
-                alpha = max(alpha, best_score)
-            else:
-                if score < best_score:
-                    best_score = score
-                    best_move = move
-                beta = min(beta, best_score)
-
-        return best_move
-
-    def alpha_beta(self, depth, alpha, beta):
-        if self.game_over:
-            return self.evaluate_terminal_position(depth)
-        if depth == 0:
-            return self.evaluate_board('black')
-
-        player = self.current_player
-        legal_moves = self.order_moves(self.get_all_legal_moves(player))
-        if not legal_moves:
-            if self.is_check(player):
-                return -100000 - depth if player == 'black' else 100000 + depth
-            return 0
-
-        if player == 'black':
-            value = -float('inf')
-            for move in legal_moves:
-                next_position = copy.deepcopy(self)
-                next_position.move_piece(*move)
-                value = max(value, next_position.alpha_beta(depth - 1, alpha, beta))
-                alpha = max(alpha, value)
-                if alpha >= beta:
-                    break
-            return value
-
-        value = float('inf')
-        for move in legal_moves:
-            next_position = copy.deepcopy(self)
-            next_position.move_piece(*move)
-            value = min(value, next_position.alpha_beta(depth - 1, alpha, beta))
-            beta = min(beta, value)
-            if alpha >= beta:
-                break
-        return value
-
-    def evaluate_terminal_position(self, depth):
-        if self.game_result == 'checkmate':
-            if self.winner == 'black':
-                return 100000 + depth
-            if self.winner == 'white':
-                return -100000 - depth
-        return 0
-
-    def order_moves(self, moves):
-        return sorted(moves, key=self.score_move_for_ordering, reverse=True)
-
-    def score_move_for_ordering(self, move):
-        from_square, to_square, promotion_piece = move
-        moving_piece = self.get_piece(from_square)
-        captured_piece = self.get_piece(to_square)
-        if self.is_en_passant_move(moving_piece, from_square, to_square):
-            captured_piece = self.get_piece(self.en_passant_capture_square)
-
-        score = 0
-        if captured_piece != '.':
-            score += self.PIECE_VALUES[captured_piece[1]] - self.PIECE_VALUES[moving_piece[1]] // 10
-        if promotion_piece is not None:
-            score += self.PIECE_VALUES[promotion_piece[1]]
-        return score
+        return ChessAI.find_best_move(self, player, depth)
 
     def get_promotion_piece(self, piece, to_square, promotion_piece):
         if piece == 'wp' and to_square[0] == 7:
